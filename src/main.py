@@ -1,11 +1,5 @@
 """日程管理工具（按天管理，支持完成/未完成状态）。
 
-用法示例：
-  python main.py view 2026-03-06
-  python main.py add 2026-03-06 "买菜"
-  python main.py done 2026-03-06 2
-  python main.py list-dates
-
 日程数据保存在 `schedules.json`。
 """
 
@@ -131,6 +125,8 @@ def run_gui() -> None:
     root = ctk.CTk()
     root.title("日程管理")
     root.geometry("800x600")
+    # 保证窗口在缩小时仍能完整显示底部按钮
+    root.minsize(640, 540)
 
     # 当前展示的月份（第一天）
     display_month = datetime.today().date().replace(day=1)
@@ -141,23 +137,53 @@ def run_gui() -> None:
             return text
         return text[: max_len - 1] + "…"
 
-    def _day_summary(date_str: str) -> str:
+    def _day_summary(date_str: str) -> tuple[str, bool]:
+        """返回 (显示文本, 是否完成) """
         tasks = data.get(date_str, [])
         if not tasks:
-            return ""
-        first = _format_cell_text(tasks[0].get("text", ""))
+            return "", False
+        # 优先展示未完成的日程，其次展示第一条。
+        unfinished = [t for t in tasks if not t.get("done")]
+        primary = unfinished[0] if unfinished else tasks[0]
+        first = _format_cell_text(primary.get("text", ""))
         extra = len(tasks) - 1
-        if extra > 0:
-            return f"{first}\n+{extra}"
-        return first
+        text = f"{first}\n+{extra}" if extra > 0 else first
+        return text, bool(primary.get("done"))
+
+    selected_task_index: int | None = None
 
     def _refresh_detail():
+        nonlocal selected_task_index
         date_str = selected_date.get()
         detail_date_label.configure(text=date_str)
-        detail_listbox.delete(0, "end")
-        for idx, task in enumerate(data.get(date_str, []), start=1):
+        detail_text.configure(state="normal")
+
+        # 清理并重新填充内容
+        detail_text.delete("1.0", "end")
+        detail_text.tag_remove("selected", "1.0", "end")
+
+        tasks = data.get(date_str, [])
+        if selected_task_index is not None and (selected_task_index < 0 or selected_task_index >= len(tasks)):
+            # 超出范围时取消选中
+            selected_task_index = None
+
+        for idx, task in enumerate(tasks, start=1):
             prefix = "✔ " if task.get("done") else "  "
-            detail_listbox.insert("end", f"{idx:>2}. {prefix}{task.get('text')}")
+            line = f"{idx:>2}. {prefix}{task.get('text')}\n"
+            detail_text.insert("end", line)
+            if task.get("done"):
+                detail_text.tag_add("done", f"{idx}.0", f"{idx}.end")
+            if selected_task_index is not None and idx - 1 == selected_task_index:
+                detail_text.tag_add("selected", f"{idx}.0", f"{idx}.end")
+
+        detail_text.configure(state="disabled")
+
+    def _select_line(event):
+        nonlocal selected_task_index
+        index = detail_text.index(f"@{event.x},{event.y}")
+        line = int(index.split(".")[0])
+        selected_task_index = line - 1
+        _refresh_detail()
 
     def _add_task_detail():
         date_str = selected_date.get()
@@ -171,10 +197,9 @@ def run_gui() -> None:
 
     def _operate_task(action: str):
         date_str = selected_date.get()
-        sel = detail_listbox.curselection()
-        if not sel:
+        if selected_task_index is None:
             return
-        idx = sel[0] + 1
+        idx = selected_task_index + 1
         if action == "done":
             _set_done(data, date_str, idx, True)
         elif action == "undone":
@@ -198,7 +223,7 @@ def run_gui() -> None:
         # 星期标题
         weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         for col, name in enumerate(weekdays):
-            ctk.CTkLabel(calendar_frame, text=name, font=ctk.CTkFont(weight="bold")).grid(row=0, column=col, padx=2, pady=2)
+            ctk.CTkLabel(calendar_frame, text=name, font=ctk.CTkFont(family="Microsoft YaHei", weight="bold")).grid(row=0, column=col, padx=2, pady=2)
 
         cal = calendar.Calendar(firstweekday=0)
         weeks = cal.monthdatescalendar(display_month.year, display_month.month)
@@ -233,18 +258,23 @@ def run_gui() -> None:
                     frame,
                     text=str(day.day),
                     text_color="#ffffff" if is_current_month else "#cccccc",
-                    font=ctk.CTkFont(weight="bold"),
+                        font=ctk.CTkFont(family="Microsoft YaHei", weight="bold"),
                 ).pack(anchor="nw", padx=6, pady=4)
 
                 # 日程摘要
-                summary = _day_summary(day_str)
-                if summary:
+                summary_text, summary_done = _day_summary(day_str)
+                if summary_text:
+                    font_kwargs = {}
+                    if summary_done:
+                        font_kwargs["overstrike"] = 1
+
                     ctk.CTkLabel(
                         frame,
-                        text=summary,
+                        text=summary_text,
                         text_color="#ffffff" if is_current_month else "#dddddd",
                         justify="left",
                         wraplength=110,
+                        font=ctk.CTkFont(family="Microsoft YaHei", **font_kwargs) if font_kwargs else ctk.CTkFont(family="Microsoft YaHei"),
                     ).pack(anchor="nw", padx=6, pady=(0, 4))
 
                 frame.bind("<Button-1>", lambda e, d=day_str: _select_date(d))
@@ -268,7 +298,7 @@ def run_gui() -> None:
         _refresh_calendar()
 
     ctk.CTkButton(header, text="<<", width=40, command=lambda: _change_month(-1)).pack(side="left", padx=4)
-    month_label = ctk.CTkLabel(header, text=display_month.strftime("%Y-%m"), font=ctk.CTkFont(size=16, weight="bold"))
+    month_label = ctk.CTkLabel(header, text=display_month.strftime("%Y-%m"), font=ctk.CTkFont(family="Microsoft YaHei", size=16, weight="bold"))
     month_label.pack(side="left", padx=8)
     ctk.CTkButton(header, text=">>", width=40, command=lambda: _change_month(1)).pack(side="left", padx=4)
 
@@ -278,27 +308,46 @@ def run_gui() -> None:
 
     # 日程详情区
     detail_frame = ctk.CTkFrame(root)
-    detail_frame.pack(fill="x", padx=10, pady=(0, 10))
+    detail_frame.pack(fill="both", padx=10, pady=(0, 10))
 
-    detail_date_label = ctk.CTkLabel(detail_frame, text=selected_date.get(), font=ctk.CTkFont(size=16, weight="bold"))
-    detail_date_label.pack(anchor="w", pady=(8, 4))
+    # 使用 grid 布局，保证在窗口缩小时：
+    # 1) 详情文本区域可缩放；
+    # 2) 底部按钮区始终可见。
+    detail_frame.grid_rowconfigure(1, weight=1)
+    detail_frame.grid_columnconfigure(0, weight=1)
 
-    detail_listbox = tk.Listbox(detail_frame, activestyle="none", height=6, font=("Arial", 18))
-    detail_listbox.pack(fill="x", pady=(0, 4))
-    detail_scroll = tk.Scrollbar(detail_frame, command=detail_listbox.yview)
-    detail_listbox.config(yscrollcommand=detail_scroll.set)
-    detail_scroll.pack(side="right", fill="y")
+    detail_date_label = ctk.CTkLabel(detail_frame, text=selected_date.get(), font=ctk.CTkFont(family="Microsoft YaHei", size=16, weight="bold"))
+    detail_date_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(8, 4))
+
+    # 不指定固定高度，让窗口缩小时顶部内容可收缩，确保按钮区域始终可见
+    detail_text = tk.Text(detail_frame, wrap="word", borderwidth=0, highlightthickness=0, font=("Microsoft YaHei", 14))
+    detail_text.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
+
+    detail_scroll = tk.Scrollbar(detail_frame, command=detail_text.yview)
+    detail_text.configure(yscrollcommand=detail_scroll.set)
+    detail_scroll.grid(row=1, column=1, sticky="ns", pady=(0, 4))
+
+    detail_text.tag_configure("done", overstrike=1, foreground="#888888")
+    detail_text.tag_configure("selected", background="#f0f0f0")
+    detail_text.bind("<Button-1>", _select_line)
 
     detail_entry = ctk.CTkEntry(detail_frame, placeholder_text="在此输入新任务并回车")
-    detail_entry.pack(fill="x", pady=(0, 4))
+    detail_entry.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 4))
     detail_entry.bind("<Return>", lambda e: _add_task_detail())
 
     btns = ctk.CTkFrame(detail_frame)
-    btns.pack(fill="x", pady=(0, 6))
-    ctk.CTkButton(btns, text="添加", command=_add_task_detail).pack(side="left", expand=True, padx=4)
-    ctk.CTkButton(btns, text="完成", command=lambda: _operate_task("done")).pack(side="left", expand=True, padx=4)
-    ctk.CTkButton(btns, text="未完成", command=lambda: _operate_task("undone")).pack(side="left", expand=True, padx=4)
-    ctk.CTkButton(btns, text="删除", fg_color="#d9534f", hover_color="#c9302c", command=lambda: _operate_task("remove")).pack(side="left", expand=True, padx=4)
+    btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+
+    # 1. 定义字体对象
+    # family: 字体名称 (如 "Microsoft YaHei", "Arial")
+    # size: 字号
+    # weight: 粗细 ("bold", "normal")
+    button_font = ctk.CTkFont(family="Microsoft YaHei", size=14, weight="bold")
+    # 2. 在按钮中应用
+    ctk.CTkButton(btns, text="添加", font=button_font, command=_add_task_detail).pack(side="left", expand=True, padx=4)
+    ctk.CTkButton(btns, text="完成", font=button_font, command=lambda: _operate_task("done")).pack(side="left", expand=True, padx=4)
+    ctk.CTkButton(btns, text="未完成", font=button_font, command=lambda: _operate_task("undone")).pack(side="left", expand=True, padx=4)
+    ctk.CTkButton(btns, text="删除", font=button_font, fg_color="#d9534f", hover_color="#c9302c", command=lambda: _operate_task("remove")).pack(side="left", expand=True, padx=4)
 
     _refresh_calendar()
     _refresh_detail()
